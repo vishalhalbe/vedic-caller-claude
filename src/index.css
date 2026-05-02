@@ -1,0 +1,142 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
+
+  html {
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: 'Nunito', sans-serif;
+    background-color: #0d0220;
+    color: #e8d5ff;
+    overflow-x: hidden;
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #180434;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #7028e4;
+    border-radius: 3px;
+  }
+}
+
+@layer components {
+  .cosmic-card {
+    @apply bg-gradient-to-br from-cosmic-900/80 to-cosmic-950/90 backdrop-blur-md border border-cosmic-700/30 rounded-2xl;
+  }
+
+  .btn-primary {
+    @apply bg-gradient-to-r from-cosmic-500 to-cosmic-600 hover:from-cosmic-400 hover:to-cosmic-500 text-white font-semibold px-6 py-3 rounded-xl transition-all duration-300 shadow-lg shadow-cosmic-500/25 hover:shadow-cosmic-500/40 hover:scale-105 active:scale-95;
+  }
+
+  .btn-gold {
+    @apply bg-gradient-to-r from-gold-500 to-gold-600 hover:from-gold-400 hover:to-gold-500 text-cosmic-950 font-bold px-6 py-3 rounded-xl transition-all duration-300 shadow-lg shadow-gold-500/30 hover:shadow-gold-500/50 hover:scale-105 active:scale-95;
+  }
+
+  .btn-outline {
+    @apply border border-cosmic-500/50 hover:border-cosmic-400 text-stardust hover:text-white px-6 py-3 rounded-xl transition-all duration-300 hover:bg-cosmic-800/40;
+  }
+
+  .input-cosmic {
+    @apply bg-cosmic-900/60 border border-cosmic-700/40 focus:border-cosmic-500 rounded-xl px-4 py-3 text-stardust placeholder-cosmic-400 outline-none transition-all duration-300 focus:ring-2 focus:ring-cosmic-500/20 w-full;
+  }
+
+  .badge-online {
+    @apply inline-flex items-center gap-1 bg-emerald-500/20 text-emerald-400 text-xs font-semibold px-2 py-0.5 rounded-full border border-emerald-500/30;
+  }
+
+  .badge-busy {
+    @apply inline-flex items-center gap-1 bg-amber-500/20 text-amber-400 text-xs font-semibold px-2 py-0.5 rounded-full border border-amber-500/30;
+  }
+
+  .badge-offline {
+    @apply inline-flex items-center gap-1 bg-gray-500/20 text-gray-400 text-xs font-semibold px-2 py-0.5 rounded-full border border-gray-500/30;
+  }
+
+  .star-bg {
+    background-image: 
+      radial-gradient(circle at 20% 20%, rgba(112, 40, 228, 0.15) 0%, transparent 50%),
+      radial-gradient(circle at 80% 80%, rgba(112, 40, 228, 0.1) 0%, transparent 50%),
+      radial-gradient(circle at 50% 50%, rgba(245, 158, 11, 0.05) 0%, transparent 70%);
+  }
+
+  .glass-panel {
+    @apply bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl;
+  }
+
+  .text-gradient {
+    @apply bg-gradient-to-r from-gold-400 via-stardust to-cosmic-300 bg-clip-text text-transparent;
+  }
+
+  .nav-link {
+    @apply text-cosmic-300 hover:text-white transition-colors duration-200 font-medium;
+  }
+}
+
+/* Stars animation */
+.stars-container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.star {
+  position: absolute;
+  border-radius: 50%;
+  background: white;
+  animation: twinkle 4s ease-in-out infinite;
+}
+
+/* Shimmer effect */
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+.shimmer {
+  background: linear-gradient(90deg, transparent 0%, rgba(255,255,255,0.1) 50%, transparent 100%);
+  background-size: 200% auto;
+  animation: shimmer 2s linear infinite;
+}
+
+/* Call pulse animation */
+@keyframes callPulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.1); opacity: 0.7; }
+}
+
+.call-pulse {
+  animation: callPulse 1s ease-in-out infinite;
+}
+
+/* Typing indicator */
+@keyframes typingBounce {
+  0%, 60%, 100% { transform: translateY(0); }
+  30% { transform: translateY(-4px); }
+}
+
+.typing-dot {
+  animation: typingBounce 1.2s ease-in-out infinite;
+}
+
+.typing-dot:nth-child(2) { animation-delay: 0.2s; }
+.typing-dot:nth-child(3) { animation-delay: 0.4s; }

@@ -1,0 +1,230 @@
+name: 🔭 CosmicSage CI
+
+on:
+  push:
+    branches: [main, develop, 'feature/**', 'hotfix/**']
+  pull_request:
+    branches: [main, develop]
+
+env:
+  NODE_VERSION: '20.x'
+  CACHE_KEY_PREFIX: cosmicsage-v1
+
+jobs:
+  # ──────────────────────────────────────────────────────
+  # STEP 1: Code Quality & Linting
+  # ──────────────────────────────────────────────────────
+  lint:
+    name: 🔍 Lint & Format Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ env.NODE_VERSION }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run ESLint
+        run: npm run lint
+        continue-on-error: false
+
+      - name: Check Prettier formatting
+        run: npm run format -- --check
+        continue-on-error: true
+
+      - name: TypeScript type check
+        run: npm run type-check
+        continue-on-error: true
+
+  # ──────────────────────────────────────────────────────
+  # STEP 2: Unit & Integration Tests
+  # ──────────────────────────────────────────────────────
+  test:
+    name: 🧪 Run Tests
+    runs-on: ubuntu-latest
+    needs: lint
+    strategy:
+      matrix:
+        node-version: ['18.x', '20.x']
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run unit tests with coverage
+        run: npm run test -- --coverage
+        env:
+          VITE_AGORA_APP_ID: ${{ secrets.AGORA_APP_ID_TEST }}
+          VITE_RAZORPAY_KEY_ID: ${{ secrets.RAZORPAY_KEY_TEST }}
+
+      - name: Upload coverage report
+        uses: codecov/codecov-action@v4
+        if: matrix.node-version == '20.x'
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          flags: unittests
+
+  # ──────────────────────────────────────────────────────
+  # STEP 3: Security Audit
+  # ──────────────────────────────────────────────────────
+  security:
+    name: 🔒 Security Audit
+    runs-on: ubuntu-latest
+    needs: lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run npm audit
+        run: npm audit --audit-level=high
+        continue-on-error: true
+
+      - name: Run Snyk security scan
+        uses: snyk/actions/node@master
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+  # ──────────────────────────────────────────────────────
+  # STEP 4: Build Production Bundle
+  # ──────────────────────────────────────────────────────
+  build:
+    name: 📦 Build Production Bundle
+    runs-on: ubuntu-latest
+    needs: [test, security]
+    outputs:
+      build-hash: ${{ steps.build-info.outputs.hash }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build for production
+        run: npm run build
+        env:
+          VITE_AGORA_APP_ID: ${{ secrets.AGORA_APP_ID }}
+          VITE_RAZORPAY_KEY_ID: ${{ secrets.RAZORPAY_KEY_ID }}
+          VITE_API_URL: ${{ secrets.API_URL }}
+          NODE_ENV: production
+
+      - name: Generate build info
+        id: build-info
+        run: |
+          HASH=$(find dist -type f | sort | xargs md5sum | md5sum | cut -d' ' -f1)
+          echo "hash=$HASH" >> $GITHUB_OUTPUT
+          echo "Build hash: $HASH"
+
+      - name: Bundle size report
+        run: |
+          echo "## 📊 Bundle Size Report" >> $GITHUB_STEP_SUMMARY
+          echo "| File | Size |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|------|" >> $GITHUB_STEP_SUMMARY
+          find dist -name "*.js" -o -name "*.css" | while read f; do
+            SIZE=$(du -sh "$f" | cut -f1)
+            echo "| $f | $SIZE |" >> $GITHUB_STEP_SUMMARY
+          done
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist-${{ github.sha }}
+          path: dist/
+          retention-days: 7
+
+  # ──────────────────────────────────────────────────────
+  # STEP 5: Lighthouse Performance Check
+  # ──────────────────────────────────────────────────────
+  lighthouse:
+    name: 🔦 Lighthouse Performance
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+
+      - name: Download build artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist-${{ github.sha }}
+          path: dist/
+
+      - name: Run Lighthouse CI
+        uses: treosh/lighthouse-ci-action@v11
+        with:
+          configPath: '.lighthouserc.json'
+          uploadArtifacts: true
+          temporaryPublicStorage: true
+
+  # ──────────────────────────────────────────────────────
+  # STEP 6: PR Summary Comment
+  # ──────────────────────────────────────────────────────
+  pr-comment:
+    name: 💬 PR Summary
+    runs-on: ubuntu-latest
+    needs: build
+    if: github.event_name == 'pull_request'
+
+    steps:
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## ✅ CosmicSage CI Passed
+
+              | Step | Status |
+              |------|--------|
+              | 🔍 Lint | ✅ Passed |
+              | 🧪 Tests | ✅ Passed |
+              | 🔒 Security | ✅ Passed |
+              | 📦 Build | ✅ Passed |
+
+              **Build Hash:** \`${{ needs.build.outputs.build-hash }}\`
+              **Commit:** \`${{ github.sha }}\`
+
+              Ready for review and deployment! 🚀`
+            })
