@@ -1,0 +1,20 @@
+{
+  "name": "cosmicsage-agents",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "CosmicSage Multi-Agent System — 6 Claude-powered agents for automated development",
+  "scripts": {
+    "triage":       "node agents/planner/triage.js",
+    "plan":         "node agents/planner/plan.js",
+    "code":         "node agents/coder/implement.js",
+    "qa":           "node agents/qa/test.js",
+    "review":       "node agents/reviewer/review.js",
+    "deploy":       "node agents/deployer/deploy.js",
+    "pipeline":     "node agents/orchestrator/run.js",
+    "pipeline:issue":  "AGENT_MODE=issue node agents/orchestrator/run.js",
+    "pipeline:review": "AGENT_MODE=pr-review node agents/orchestrator/run.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

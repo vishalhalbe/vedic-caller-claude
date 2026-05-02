@@ -1,0 +1,295 @@
+name: 🤖 CosmicSage Multi-Agent Pipeline
+
+on:
+  issues:
+    types: [opened, reopened, labeled]
+  pull_request:
+    types: [opened, synchronize, ready_for_review]
+  workflow_dispatch:
+    inputs:
+      issue_number:
+        description: 'Issue number to process'
+        required: true
+        type: number
+      mode:
+        description: 'Pipeline mode'
+        required: true
+        default: 'full'
+        type: choice
+        options: [full, issue, pr-review, triage-only]
+      deploy_env:
+        description: 'Target deployment environment'
+        required: false
+        default: 'staging'
+        type: choice
+        options: [staging, production]
+
+env:
+  NODE_VERSION: '20.x'
+
+# ──────────────────────────────────────────────────────────
+# JOB 1: TRIAGE AGENT
+# Runs on every new issue — classifies and labels it
+# ──────────────────────────────────────────────────────────
+jobs:
+  triage:
+    name: 🔮 Triage Agent
+    runs-on: ubuntu-latest
+    if: |
+      github.event_name == 'issues' ||
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.mode != 'pr-review')
+    outputs:
+      route_to:       ${{ steps.triage.outputs.route_to }}
+      triage_result:  ${{ steps.triage.outputs.triage_result }}
+      issue_number:   ${{ steps.issue_num.outputs.number }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      - name: Resolve issue number
+        id: issue_num
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            echo "number=${{ github.event.inputs.issue_number }}" >> $GITHUB_OUTPUT
+          else
+            echo "number=${{ github.event.issue.number }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 🔮 Run Triage Agent
+        id: triage
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ISSUE_NUMBER:      ${{ steps.issue_num.outputs.number }}
+        run: node agents/planner/triage.js
+
+      - name: Triage summary
+        run: |
+          echo "## 🔮 Triage Complete" >> $GITHUB_STEP_SUMMARY
+          echo "Issue #${{ steps.issue_num.outputs.number }} → route: **${{ steps.triage.outputs.route_to }}**" >> $GITHUB_STEP_SUMMARY
+
+  # ──────────────────────────────────────────────────────────
+  # JOB 2: PLANNER AGENT
+  # Only runs if triage routes to planner/coder
+  # ──────────────────────────────────────────────────────────
+  plan:
+    name: 📋 Planner Agent
+    runs-on: ubuntu-latest
+    needs: triage
+    if: |
+      needs.triage.result == 'success' &&
+      (needs.triage.outputs.route_to == 'planner' ||
+       needs.triage.outputs.route_to == 'coder' ||
+       github.event.inputs.mode == 'full')
+    outputs:
+      task_count: ${{ steps.plan.outputs.task_count }}
+      plan_artifact_id: ${{ steps.upload.outputs.artifact-id }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}' }
+
+      - name: 📋 Run Planner Agent
+        id: plan
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ISSUE_NUMBER:      ${{ needs.triage.outputs.issue_number }}
+          TRIAGE_RESULT:     ${{ needs.triage.outputs.triage_result }}
+        run: node agents/planner/plan.js
+
+      - name: Upload plan artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: plan-${{ needs.triage.outputs.issue_number }}
+          path: /tmp/cosmicsage_plan.json
+          retention-days: 1
+
+      - name: Plan summary
+        run: |
+          echo "## 📋 Plan Generated" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.plan.outputs.task_count }} tasks created" >> $GITHUB_STEP_SUMMARY
+
+  # ──────────────────────────────────────────────────────────
+  # JOB 3: CODER AGENT
+  # Implements tasks from the plan on a feature branch
+  # ──────────────────────────────────────────────────────────
+  code:
+    name: 💻 Coder Agent
+    runs-on: ubuntu-latest
+    needs: [triage, plan]
+    if: |
+      needs.plan.result == 'success' &&
+      needs.triage.outputs.route_to == 'coder' ||
+      github.event.inputs.mode == 'full'
+    outputs:
+      branch_name:       ${{ steps.code.outputs.branch_name }}
+      implemented_count: ${{ steps.code.outputs.implemented_count }}
+      failed_count:      ${{ steps.code.outputs.failed_count }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}' }
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: plan-${{ needs.triage.outputs.issue_number }}
+          path: /tmp/
+
+      - name: 💻 Run Coder Agent
+        id: code
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ISSUE_NUMBER:      ${{ needs.triage.outputs.issue_number }}
+          PLAN_FILE:         /tmp/cosmicsage_plan.json
+          MAX_TASKS:         '4'
+        run: node agents/coder/implement.js
+
+      - name: Code summary
+        run: |
+          echo "## 💻 Code Implemented" >> $GITHUB_STEP_SUMMARY
+          echo "Branch: \`${{ steps.code.outputs.branch_name }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.code.outputs.implemented_count }} files implemented" >> $GITHUB_STEP_SUMMARY
+
+  # ──────────────────────────────────────────────────────────
+  # JOB 4A: QA AGENT (runs in parallel with reviewer)
+  # Writes unit tests for all implemented files
+  # ──────────────────────────────────────────────────────────
+  qa:
+    name: 🧪 QA Agent
+    runs-on: ubuntu-latest
+    needs: [triage, plan, code]
+    if: needs.code.result == 'success'
+    outputs:
+      test_count:     ${{ steps.qa.outputs.test_count }}
+      coverage_score: ${{ steps.qa.outputs.coverage_score }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}' }
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: plan-${{ needs.triage.outputs.issue_number }}
+          path: /tmp/
+
+      - name: 🧪 Run QA Agent
+        id: qa
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ISSUE_NUMBER:      ${{ needs.triage.outputs.issue_number }}
+          PLAN_FILE:         /tmp/cosmicsage_plan.json
+          BRANCH_NAME:       ${{ needs.code.outputs.branch_name }}
+        run: node agents/qa/test.js
+
+      - name: QA summary
+        run: |
+          echo "## 🧪 Tests Generated" >> $GITHUB_STEP_SUMMARY
+          echo "${{ steps.qa.outputs.test_count }} test files | Coverage: ${{ steps.qa.outputs.coverage_score }}%" >> $GITHUB_STEP_SUMMARY
+
+  # ──────────────────────────────────────────────────────────
+  # JOB 4B: REVIEWER AGENT
+  # Triggers on PRs OR after coding pipeline creates a branch
+  # ──────────────────────────────────────────────────────────
+  review:
+    name: 🔍 Reviewer Agent
+    runs-on: ubuntu-latest
+    needs: [qa]
+    if: |
+      always() &&
+      (github.event_name == 'pull_request' ||
+       needs.qa.result == 'success')
+    outputs:
+      verdict:        ${{ steps.review.outputs.verdict }}
+      review_score:   ${{ steps.review.outputs.review_score }}
+      critical_count: ${{ steps.review.outputs.critical_count }}
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}' }
+
+      - name: Resolve PR number
+        id: pr_num
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            echo "number=${{ github.event.pull_request.number }}" >> $GITHUB_OUTPUT
+          else
+            # Try to find open PR for branch
+            PR=$(curl -s -H "Authorization: Bearer ${{ secrets.GITHUB_TOKEN }}" \
+              "https://api.github.com/repos/${{ github.repository }}/pulls?head=${{ github.repository_owner }}:${{ needs.code.outputs.branch_name }}&state=open" \
+              | node -e "const d=JSON.parse(require('fs').readFileSync('/dev/stdin','utf8')); console.log(d[0]?.number || '')")
+            echo "number=$PR" >> $GITHUB_OUTPUT
+          fi
+
+      - name: 🔍 Run Reviewer Agent
+        id: review
+        if: steps.pr_num.outputs.number != ''
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          PR_NUMBER:         ${{ steps.pr_num.outputs.number }}
+        run: node agents/reviewer/review.js
+
+      - name: Review summary
+        run: |
+          echo "## 🔍 Review Complete" >> $GITHUB_STEP_SUMMARY
+          echo "Verdict: **${{ steps.review.outputs.verdict }}** | Score: ${{ steps.review.outputs.review_score }}/10" >> $GITHUB_STEP_SUMMARY
+
+  # ──────────────────────────────────────────────────────────
+  # JOB 5: DEPLOYER AGENT
+  # Final decision: deploy or hold
+  # ──────────────────────────────────────────────────────────
+  deploy:
+    name: 🚀 Deployer Agent
+    runs-on: ubuntu-latest
+    needs: [triage, code, qa, review]
+    if: |
+      always() &&
+      needs.review.result == 'success' &&
+      needs.qa.result == 'success'
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '${{ env.NODE_VERSION }}' }
+
+      - name: 🚀 Run Deployer Agent
+        id: deploy
+        env:
+          GITHUB_TOKEN:      ${{ secrets.GITHUB_TOKEN }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ISSUE_NUMBER:      ${{ needs.triage.outputs.issue_number }}
+          BRANCH_NAME:       ${{ needs.code.outputs.branch_name }}
+          REVIEW_VERDICT:    ${{ needs.review.outputs.verdict }}
+          REVIEW_SCORE:      ${{ needs.review.outputs.review_score }}
+          CRITICAL_COUNT:    ${{ needs.review.outputs.critical_count }}
+          COVERAGE_SCORE:    ${{ needs.qa.outputs.coverage_score }}
+          TEST_COUNT:        ${{ needs.qa.outputs.test_count }}
+          DEPLOY_ENV:        ${{ github.event.inputs.deploy_env || 'staging' }}
+        run: node agents/deployer/deploy.js
+
+      - name: Pipeline summary
+        run: |
+          echo "## 🌟 Pipeline Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Agent | Result |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔮 Triage | ${{ needs.triage.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 📋 Planner | ${{ needs.plan.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| 💻 Coder | ${{ needs.code.result }} → ${{ needs.code.outputs.implemented_count }} files |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🧪 QA | ${{ needs.qa.result }} → ${{ needs.qa.outputs.test_count }} tests |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🔍 Reviewer | ${{ needs.review.outputs.verdict }} (score: ${{ needs.review.outputs.review_score }}) |" >> $GITHUB_STEP_SUMMARY
+          echo "| 🚀 Deployer | ${{ steps.deploy.outputs.deploy_env }} |" >> $GITHUB_STEP_SUMMARY
